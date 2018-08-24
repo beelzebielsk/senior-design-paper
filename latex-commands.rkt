@@ -15,5 +15,5 @@
     (string-join body " ")
     "\n"
     (macro 'end (symbol->string name))))
-(define (ensure-math text) (macro 'ensuremath text))
+;(define (ensure-math text) (macro 'ensuremath text))
 (provide (all-defined-out))

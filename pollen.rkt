@@ -1,12 +1,20 @@
 #lang racket
-(require txexpr "latex-commands.rkt")
+(require txexpr 
+         "latex-commands.rkt"
+         "utility.rkt"
+         pollen/tag
+         pollen/decode
+         racket/stxparam)
 
 (define-syntax ddlog
   (lambda (stx)
     (syntax-case stx ()
       [name (identifier? #'name) #'"DDLOG"]
       [(_ args ...)
-       #'(format "\\DDLOG(~a)" (string-join (list args ...) " "))])))
+       #'(ensure-math
+           "DDLOG" args ...)])))
+          ;(format "\\DDLOG(~a)" 
+                  ;(string-join (map ~a (list args ...)) " ")))])))
 (define-syntax key
   (lambda (stx)
     (syntax-case stx ()
@@ -20,46 +28,91 @@
       [name 
         (identifier? #'name) 
         #'(ensure-math (macro 'mathbb "I"))]
-      [(_ args ...) 
-       #'(ensure-math 
-           (format "~a(~a)" 
-                   (macro 'mathbb "I")
-                   (string-join (list args ...) " ")))])))
+      [(_ args ...) #'(ensure-math input "(" args ... ")")])))
 
-(define ($ . text)
-  (format "$~a$" (string-join (map ~a text) " ")))
-(define ($$ . text)
-  ($ (apply $ text)))
-(define math $)
-(define (share . text)
-  (ensure-math (format "<~a>" (string-join (map ~a text) " "))))
-(define (secret-share . text)
+(define-tag-function 
+  (math attrs elems)
+  (txexpr 'math attrs elems))
+(define ensure-math math)
+
+(define-syntax-rule (define-math-tag (name attrs elems) body ...)
+  (define-tag-function 
+    (name attrs elems) 
+    (ensure-math ((lambda (attrs elems) body ...) attrs elems))))
+
+; The difference between flatten and what I'm going for is that I'm
+; not going to flatten everything.
+; If I assume that the only tag left are math tags, which means that
+; the document now looks like:
+;   ('root (or/c string? math-tag?) ...)
+; And that math tags may contain either strings or other math-tags,
+; then all I'm really trying to do is call a special flatten on all
+; the math tags. It's a txexpr-flatten which includes only the
+; elements of the expression within the parent expression.
+;
+; If I wait until the absolute last moment to handle the math nesting,
+; then one interesting consequence of this is that all the "top-level"
+; math tags will necessarily be children of the root tag. This is
+; because if the 'root tag has a tag as a child at this point, the
+; only remaining tags at this point are math tags.
+(define (math-process xexpr)
+  (define (helper xexpr in-math-tag?)
+    (displayln xexpr)
+    (if (txexpr? xexpr)
+      (txexpr 
+        (get-tag xexpr)
+        (get-attrs xexpr)
+        (foldl
+          (λ (elem result)
+             (if (is-tag? elem 'math)
+               (if in-math-tag?
+                 (append result (get-elements (helper elem #t)))
+                 (append result 
+                         (list "$") 
+                         (get-elements (helper elem #t))
+                         (list "$")))
+               (append result (list elem))))
+             null (get-elements xexpr)))
+        xexpr))
+  (helper xexpr #f))
+
+; ensure-math should expand to math, unless inside of a math tag.
+; Can be accomplished through syntax parameters.
+; ensure-math will be syntax parameter which expands to a math tag.
+; math tags change that syntax parameter to be something
+; inconsequential.
+
+(define-tag-function 
+  (math-tag attrs elements)
+  (txexpr 'math attrs elements))
+
+(define-math-tag ($ _ text)
+  (math text))
+(define-math-tag ($$ _ text)
+  (math #:display "" text))
+(define-math-tag (share _ text)
+  (format "<~a>" (string-join (map ~a text) " ")))
+(define-math-tag (secret-share _ text)
   (apply share (flatten (list key "(" text ")"))))
-(define (set . text)
-  (ensure-math 
-    (string-append
-      "\\{"
-      (string-join text ", ")
-      "\\}")))
-
-(define mult "X")
-(define (encryption . text)
-  (define content (string-join (map ~a text) " "))
-  (ensure-math (format "[~a]_{~a}" content key)))
-(define (congruent #:modulus [modulus "n"] . text )
-  (apply $ text))
-(define (number->bits num)
-  (if (< num 2)
-    (list num)
-    (append (number->bits (quotient num 2)) 
-            (list (remainder num 2)))))
-(define location (ensure-math "M"))
-(define (title . text)
-  (define content (string-join (map ~a text) " "))
+(define-math-tag (set _ text)
   (string-append
-    (macro 'title content)
-    (macro 'maketitle)))
-(define (bit . text)
+    "\\{"
+    (string-join text ", ")
+    "\\}"))
+(define mult (ensure-math "X"))
+(define-math-tag (encryption _ text)
+  (define content (string-join (map ~a text) " "))
+  (format "[~a]_{~a}" content key))
+(define-math-tag 
+  (congruent attrs text)
+  (let [(m (if (attrs-have-key? 'modulus attrs)
+             (attr-ref 'modulus)
+             "n"))]
+    text))
+
+
+(define location (ensure-math "M"))
+(define-math-tag (bit _ text)
   (define (norm-arguments args)
     (cond [(>= (length args) 2)
            (take args 2)]
@@ -74,15 +127,10 @@
       (error "Tag `bit` takes two space-separated arguments"
              text)
       (match-let [((list base index) args)]
-        (ensure-math (format "~a^{(~a)}" base index)))
-      )))
-(define (enumerate lst)
-  (build-list (length lst) identity))
-(define (sum . text) "")
-(define (reverse* val)
-  (cond [(null? val) val]
-        [(pair? val) (reverse (map reverse* val))]
-        [else val]))
+        (format "~a^{(~a)}" base index)))))
+(define-math-tag 
+  (sum attrs text) 
+  "")
 ; list? procedure? #:keep-where procedure? -> list?
 ; Somewhat similar to the split procedure for strings. Takes a list
 ; and returns a list of the same elements of lst, in the same order,
@@ -167,6 +215,29 @@
 
 
 
+(define (eql . text)
+  (displayln (format "eql contents: ~v" text))
+  (displayln (format "eql split at newlines: ~v" 
+                     (split-at-tag-or-newline text)))
+; contextual processing: if a printable? or series of printable?
+; is/are followed by a newline or a txexpr?, then wrap that in an
+; 'i tag. The following is done under the assumption that the only
+; elements in text are txexpr? and printable?. 
+  (let [(other-splits
+          (split-where 
+            text
+            (λ (current . _)
+               (or (and (string? current) (string=? "\n" current))
+                   (txexpr? current)))
+            #:keep-where
+            (λ (current . _)
+               (if (txexpr? current) 'separate #f))
+            #:split-map
+            (λ (current . _) 
+               (if ((listof printable?) current)
+                 (txexpr 'i null (map ~a current))
+                 current))))]
+  (txexpr 'eql null other-splits)))
 (define (final-eql eql-tag)
   (define break-equation "\\\\\n")
   (define (item-func t)
@@ -176,43 +247,10 @@
       (string-join 
         (map item-func (get-elements eql-tag))
         break-equation)))
+(define-tag-function
+  (bollocks _ text)
+  text)
 
-
-(define printable? (or/c string? number? symbol?))
-(define (eql . text)
-  (displayln (format "eql contents: ~v" text))
-  (displayln (format "eql split at newlines: ~v" 
-                     (split-at-tag-or-newline text)))
-; contextual processing: if a printable? or series of printable?
-; is/are followed by a newline or a txexpr?, then wrap that in an
-; 'i tag. The following is done under the assumption that the only
-; elements in text are txexpr? and printable?. 
-  (let* [(splits (split-at-tag-or-newline text))
-         (normalized-splits 
-           (map 
-             (λ (elem)
-                (if (and (not (txexpr? elem))
-                         ((listof printable?) elem))
-                  (txexpr 'i null (map ~a elem))
-                  elem))
-             splits))
-         (other-splits
-           (split-where 
-             text
-             (λ (current . _)
-                (or (and (string? current) (string=? "\n" current))
-                    (txexpr? current)))
-             #:keep-where
-             (λ (current . _)
-                (if (txexpr? current) 'separate #f))
-             #:split-map
-             (λ (current . _) 
-                (if ((listof printable?) current)
-                  (txexpr 'i null (map ~a current))
-                  current))))]
-  (final-eql (txexpr 'eql null other-splits))))
-;(define (example . text)
-  ;(macro 'frame (string-join 
 
 (provide (all-defined-out))
 
@@ -271,3 +309,25 @@
 ;   figure out how to produce output for different formats from that
 ;   middle layer. That would make poly output much easier to produce
 ;   and a lot less confusing to read.
+; - Preprocessing is cleaning up the custom tags so that they're very
+;   easy to postprocess, and turning everything else into tags that
+;   are readily translatable into tex (macro, environment, or just
+;   plain text).
+; - Postprocessing is performing any contextual transformations that
+;   are necessary, and then transforming the result of that into the
+;   final output.
+
+; - Core tags
+;   - macro
+;   - environment
+;   - math
+; - Convenience tags
+;   - ol (ordered list)
+;   - l (unordered list)
+;   - eql (equation list)
+;       - i (as a member of ol, l, or eql)
+;   - table
+;       - row, and cell, as members of table
+; Everything else should trasnform pretty diectly into a rendered
+; form. Putting it into a tag is optional.
+    
