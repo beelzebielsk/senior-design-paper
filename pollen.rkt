@@ -28,12 +28,17 @@
       [name 
         (identifier? #'name) 
         #'(ensure-math (macro 'mathbb "I"))]
-      [(_ args ...) #'(ensure-math input "(" args ... ")")])))
+      [(_ args ...) 
+       #'(ensure-math (macro 'mathbb "I") "(" args ... ")")])))
+(define-syntax-rule (report EXPR)
+  (let [(result EXPR)] (displayln result) result))
 
 (define-tag-function 
   (math attrs elems)
   (txexpr 'math attrs elems))
 (define ensure-math math)
+;(define (ensure-math . _)
+  ;(txexpr 'math null _))
 
 (define-syntax-rule (define-math-tag (name attrs elems) body ...)
   (define-tag-function 
@@ -85,11 +90,10 @@
 (define-tag-function 
   (math-tag attrs elements)
   (txexpr 'math attrs elements))
-
-(define-math-tag ($ _ text)
-  (math text))
-(define-math-tag ($$ _ text)
-  (math #:display "" text))
+(define-tag-function ($ _ text)
+  (apply math text))
+(define-tag-function ($$ _ text)
+  (apply math #:display "" text))
 (define-math-tag (share _ text)
   (format "<~a>" (string-join (map ~a text) " ")))
 (define-math-tag (secret-share _ text)
@@ -99,7 +103,7 @@
     "\\{"
     (string-join text ", ")
     "\\}"))
-(define mult (ensure-math "X"))
+(define mult (ensure-math (macro 'otimes)))
 (define-math-tag (encryption _ text)
   (define content (string-join (map ~a text) " "))
   (format "[~a]_{~a}" content key))
@@ -131,82 +135,6 @@
 (define-math-tag 
   (sum attrs text) 
   "")
-; list? procedure? #:keep-where procedure? -> list?
-; Somewhat similar to the split procedure for strings. Takes a list
-; and returns a list of the same elements of lst, in the same order,
-; but placed in sublists. Each sublist ends where an element occurs
-; that causes (split-pred? element) to be true. The next sublist picks
-; up from there. If a split should be empty (such as when there are
-; two consecutive elements that cause split-pred? to be true), then
-; those splits are not kept.
-; The split-map option is supplied because the output of split-where
-; may not be a list of splits if the #:keep-where function returns
-; 'separate. In this case, the split element is placed on it's own in
-; the list of splits. Mapping over the splits (and only the splits) is
-; a common enough use-case, I think, that the optional parameter is
-; warranted.
-(define (split-where lst split-pred? 
-          #:keep-where [keep-pred? (λ _ #f)]
-          #:split-map [split-func #f])
-  (define (iter current-split splits remaining)
-    (cond 
-      [(null? remaining) 
-       (cond
-         [(null? current-split) splits]
-         [split-func (cons (split-func (reverse current-split)) splits)]
-         [else (cons (reverse current-split) splits)])]
-      [else
-        (match-let
-          [((cons elem tail) remaining)]
-          (if (split-pred? elem current-split tail)
-            (let* 
-              [(decision (keep-pred? elem current-split
-                                     tail))
-               (new-current-split
-                 (case decision
-                   [(next) (list elem)]
-                   [else null]))
-               (final-current-split-contents
-                 (reverse
-                   (case decision
-                     [(current) (cons elem current-split)]
-                     [else current-split])))
-               (processed-current-split
-                 (cond
-                   [(null? final-current-split-contents)
-                    final-current-split-contents]
-                   [split-func
-                    (split-func final-current-split-contents)]
-                   [else final-current-split-contents]))
-               (new-splits
-                 (case decision
-                   [('separate #t)
-                    (if (null? processed-current-split)
-                      (cons elem splits)
-                      (append (list elem processed-current-split)
-                              splits))]
-                   [else
-                     (if (null? processed-current-split)
-                       splits
-                       (cons processed-current-split splits))]))]
-              (iter new-current-split
-                    new-splits
-                    tail))
-            (iter (cons elem current-split)
-                  splits
-                  tail)))]))
-  (reverse (iter null null lst)))
-(define (split-list-at lst val)
-  (split-where lst (λ (current . _) (equal? val current))))
-(define (split-at-tag-or-newline lst)
-  (split-where 
-    lst 
-    (λ (current . _) 
-       (or (and (string? current) (string=? "\n" current))
-           (txexpr? current)))
-    #:keep-where 
-    (λ (split-elem . _) 
-       (if (txexpr? split-elem) 'separate #f))))
 
 
 
@@ -214,30 +142,6 @@
 
 
 
-
-(define (eql . text)
-  (displayln (format "eql contents: ~v" text))
-  (displayln (format "eql split at newlines: ~v" 
-                     (split-at-tag-or-newline text)))
-; contextual processing: if a printable? or series of printable?
-; is/are followed by a newline or a txexpr?, then wrap that in an
-; 'i tag. The following is done under the assumption that the only
-; elements in text are txexpr? and printable?. 
-  (let [(other-splits
-          (split-where 
-            text
-            (λ (current . _)
-               (or (and (string? current) (string=? "\n" current))
-                   (txexpr? current)))
-            #:keep-where
-            (λ (current . _)
-               (if (txexpr? current) 'separate #f))
-            #:split-map
-            (λ (current . _) 
-               (if ((listof printable?) current)
-                 (txexpr 'i null (map ~a current))
-                 current))))]
-  (txexpr 'eql null other-splits)))
 (define (final-eql eql-tag)
   (define break-equation "\\\\\n")
   (define (item-func t)
@@ -247,12 +151,8 @@
       (string-join 
         (map item-func (get-elements eql-tag))
         break-equation)))
-(define-tag-function
-  (bollocks _ text)
-  text)
 
 
-(provide (all-defined-out))
 
 ; TODO:
 ; - Decode tables to turn single lines into cells, and allow for cell
@@ -331,3 +231,103 @@
 ; Everything else should trasnform pretty diectly into a rendered
 ; form. Putting it into a tag is optional.
     
+(define (eql . text)
+  (displayln (format "eql contents: ~v" text))
+  (displayln (format "eql split at newlines: ~v" 
+                     (split-list-at-tag-or-newline text)))
+  ; contextual processing: if a printable? or series of printable?
+  ; is/are followed by a newline or a txexpr?, then wrap that in an
+  ; 'i tag. The following is done under the assumption that the only
+  ; elements in text are txexpr? and printable?. 
+  (let [(other-splits
+          (split-where 
+            text
+            (λ (current . _)
+               (or (and (string? current) (string=? "\n" current))
+                   (txexpr? current)))
+            #:keep-where
+            (λ (current . _)
+               (if (txexpr? current) 'separate #f))
+            #:split-map
+            (λ (current . _) 
+               (if ((listof printable?) current)
+                 (txexpr 'i null (map ~a current))
+                 current))))]
+    (txexpr 'eql null other-splits)))
+; operates on a list of elements that should be contained in a list,
+; and then returns a list of 'i tags.
+#|
+(define (decode-list-items elements)
+  (split-where
+    elements
+    (λ (elem current-split _)
+       (and (string? elem) 
+            (regexp-match "^\s+-" elem)
+            (string=? "\n "(last current-split))))
+    #:keep-where (λ _ 'next)
+    #:split-map
+    (λ (current . _)
+       (txexpr 'i
+               null
+               (cons
+                 (regexp-replace "^\s+-" (first current) "")
+                 (rest current))))))
+|#
+
+(define (split-list-at-tag-or-newline lst)
+  (split-where 
+    lst 
+    (λ (current . _) 
+       (or (and (string? current) (string=? "\n" current))
+           (is-tag? current 'i)))
+    #:keep-where 
+    (λ (split-elem . _) 
+       (if (txexpr? split-elem) 'separate #f))))
+(define (split-list-at-bullets-or-list-tags lst bullet-pattern list-tag)
+  (split-where
+    lst
+    (λ (elem current-split . _)
+       (displayln (~v elem))
+       (displayln (~v current-split))
+       (or (is-tag? elem list-tag)
+           (and (string? elem) 
+                (regexp-match bullet-pattern elem)
+                (not (null? current-split))
+                ; TODO: There's more I can do here. I might want to
+                ; give more control to the user on how to insert a
+                ; value into the current split, consume a few extra
+                ; values from the remaining, and such. Because I'd
+                ; like for split-where to take care of elminating
+                ; newlines around the bullets, too.
+                ; NOTE: Remember that, before you place the split in
+                ; splits, the split is in reverse order. That's a
+                ; nasty implementation detail and ought to be changed.
+                (string=? "\n" (first current-split)))))
+    #:keep-where 
+    (λ (current . _) 
+       (if (string? current)
+         'next
+         'separate))
+    #:split-map
+    (λ (current . _)
+       (if (txexpr? current)
+         current
+         (txexpr list-tag
+                 null
+                 (cons
+                   (regexp-replace bullet-pattern (first current) "")
+                   (rest current)))))))
+
+(define-tag-function
+  (l attrs elems)
+  (displayln (~v elems))
+  (txexpr 'list '((type "unordered")) 
+          (report (split-list-at-bullets-or-list-tags elems 
+                                                      #px"^\\s*-" 
+                                                      'i))))
+(define-tag-function
+  (ol attrs elems)
+  (txexpr 'list '((type "ordered")) 
+          (split-list-at-bullets-or-list-tags elems #px"^\\s*-" 'i)))
+
+(provide (all-defined-out))
