@@ -1,6 +1,53 @@
 #lang racket
 (require txexpr)
 
+(define-syntax-rule (report EXPR)
+  (let 
+    [(result EXPR)
+     (expr-length 25)
+     (expr-string (~v (syntax->datum #'EXPR)))]
+    (displayln
+      (string-append
+        ; If the syntax object is from some other module...
+        (if (syntax-source-module #'EXPR)
+          (format "[From ~a]" 
+                  ; Report only the filename of the module.
+                  (last
+                    (explode-path
+                      (resolved-module-path-name
+                        (module-path-index-resolve 
+                          (syntax-source-module #'EXPR))))))
+          "")
+        (format "(line ~a, col ~a): Expression ~a results in ~a"
+                (syntax-line #'EXPR)
+                (syntax-column #'EXPR)
+                (if (> (string-length expr-string) expr-length)
+                  (string-append (substring expr-string 0 expr-length) "...")
+                  expr-string)
+                result)))
+    result))
+
+; Makes it so that a list of elements appears in the pollen document
+; as if they were not enclosed in a list. Like when/splice, but always
+; happens. The map here is for just in case something is produced that
+; is not a txexpr-element. Any number that's not a symbol (I think) is
+; not a txexpr-element, so that's nonpositive numbers, floating-point,
+; exact rational numbers which do not reduce to an integer.
+(define (list-splice . args)
+  (if (= 1 (length args))
+    (let ([lst (first args)])
+      (cons '@ 
+            (map (lambda (e) (if (txexpr-element? e) e (~a e)))
+                 lst)))
+    (list-splice args)))
+(define-syntax let-splice
+  (lambda (stx)
+    (syntax-case stx ()
+      [(_ ((id val) ...) body)
+       #'(let ((id val) ...) body)]
+      [(_ ((id val) ...) body ...)
+       #'(let ((id val) ...) 
+           (list-splice body ...))])))
 (define (number->bits num)
   (if (< num 2)
     (list num)
@@ -104,16 +151,22 @@
                     (split-func final-current-split-contents)]
                    [else final-current-split-contents]))
                (new-splits
-                 (case decision
-                   [('separate #t)
-                    (if (null? processed-current-split)
-                      (cons elem splits)
-                      (append (list elem processed-current-split)
-                              splits))]
-                   [else
-                     (if (null? processed-current-split)
-                       splits
-                       (cons processed-current-split splits))]))]
+                 (begin 
+                   (report decision)
+                   (if (eq? decision 'separate)
+                     (report (list elem processed-current-split))
+                     (void))
+                   (report 
+                     (case decision
+                       [(separate #t)
+                        (if (null? processed-current-split)
+                          (cons elem splits)
+                          (append (list elem processed-current-split)
+                                  splits))]
+                       [else
+                         (if (null? processed-current-split)
+                           splits
+                           (cons processed-current-split splits))]))))]
               (iter new-current-split
                     new-splits
                     tail))
